@@ -55,8 +55,20 @@ sudo apt install \
 ## Install
 
 ```bash
+git clone https://github.com/johnohhh1/portal_use
 cd portal_use
-python3 -m venv .venv
+bash install.sh
+```
+
+`install.sh` installs system packages, creates a venv, installs Python deps, and registers the MCP server with Claude Code automatically.
+
+**Manual install:**
+```bash
+sudo apt-get install -y python3-gi python3-gi-cairo \
+    gir1.2-gst-plugins-base-1.0 gstreamer1.0-pipewire \
+    gstreamer1.0-plugins-good libei1 xdg-desktop-portal-gnome
+
+python3 -m venv --system-site-packages .venv
 .venv/bin/pip install mcp dbus-next Pillow
 ```
 
@@ -68,6 +80,21 @@ python3 -m venv .venv
 claude mcp add --scope user portal-use -- \
     /path/to/portal_use/.venv/bin/python \
     /path/to/portal_use/server.py
+```
+
+## Register with Claude Desktop
+
+Add to `~/.config/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "portal-use": {
+      "command": "/path/to/portal_use/.venv/bin/python",
+      "args": ["/path/to/portal_use/server.py"]
+    }
+  }
+}
 ```
 
 To pre-approve all tools so Claude never prompts for permission, add to `~/.claude/settings.json`:

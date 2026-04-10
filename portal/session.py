@@ -148,19 +148,29 @@ class PortalSession:
         print("[portal] Devices selected (keyboard + pointer)", file=sys.stderr, flush=True)
 
     async def _select_sources(self):
-        # NOTE: persist_mode causes xdg-desktop-portal-gnome 50.x to deadlock
-        # (SelectSources never sends a Response signal on combined RD+ScreenCast
-        # sessions). Omit it until the upstream bug is fixed. Restore tokens
-        # will not be issued without persist_mode, so consent fires every restart.
+        # persist_mode=1 → token valid until compositor session ends (login/logout).
+        # persist_mode=2 → token survives reboots (preferred, but deadlocks on
+        #                   xdg-desktop-portal-gnome 46–50 in combined RD+SC sessions).
+        # We try mode=1 first; it avoids the deadlock and still means the consent
+        # dialog fires only once per login session, not once per MCP server restart.
         options: dict = {
             "types": Variant("u", 1),
             "cursor_mode": Variant("u", 2),
+            "persist_mode": Variant("u", 1),
         }
         if self._restore_token:
-            print(f"[portal] Restore token on file but persist_mode disabled (GNOME 50 bug) — consent will appear", file=sys.stderr, flush=True)
+            options["restore_token"] = Variant("s", self._restore_token)
+            print("[portal] Trying restore token (persist_mode=1 — valid until logout)", file=sys.stderr, flush=True)
         else:
-            print(f"[portal] No restore token — consent dialog will appear", file=sys.stderr, flush=True)
-        await self._call_portal(CAST_IFACE, "SelectSources", self.session_path, options)
+            print("[portal] No restore token — consent dialog will appear once this login session", file=sys.stderr, flush=True)
+        try:
+            await self._call_portal(CAST_IFACE, "SelectSources", self.session_path, options, timeout=15.0)
+        except asyncio.TimeoutError:
+            # persist_mode deadlock — fall back to no persistence
+            print("[portal] persist_mode timed out (known GNOME bug) — retrying without persistence", file=sys.stderr, flush=True)
+            options.pop("persist_mode")
+            options.pop("restore_token", None)
+            await self._call_portal(CAST_IFACE, "SelectSources", self.session_path, options)
         print("[portal] Sources selected (monitor)", file=sys.stderr, flush=True)
 
     async def _start_session(self) -> tuple[list, Optional[str]]:

@@ -99,6 +99,15 @@ async def _init_session():
     )
     _input.connect()
 
+    # Move cursor away from (0,0) immediately — the homing move during connect()
+    # parks the cursor at the top-left corner which hits GNOME's Activities hot
+    # corner and opens the overview on the first tool call. Nudge to a safe spot.
+    safe_x = _phys_width * 0.05
+    safe_y = _phys_height * 0.5
+    await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _input.move(safe_x, safe_y)
+    )
+
     print(
         f"[portal-use] Ready. {_phys_width}x{_phys_height}, "
         f"scale={_scale_factor:.3f}, session={_session.session_path}",
