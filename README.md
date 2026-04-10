@@ -37,7 +37,7 @@ The consent dialog fires **once** when the server first starts. After that the s
 
 ## Requirements
 
-**OS**: Ubuntu 24.04+ or any GNOME Wayland compositor  
+**OS**: Ubuntu 26.04 (Resolute Raccoon) or any GNOME 50+ Wayland compositor  
 **Not supported**: X11, KDE wlroots (EIS partial), headless
 
 ```bash
@@ -235,13 +235,3 @@ On a non-HiDPI 1920×1200 display: frame = EIS region = physical, so the pipelin
 
 portal-use uses only portal-mediated access. The compositor enforces consent — no root, no evdev direct access, no kernel module. The restore token (`~/.config/portal-use/session_token`) is a compositor-issued opaque string; it contains no screen content and cannot be used outside your session.
 
----
-
-## Roadmap
-
-- [ ] Multi-monitor coordinate stitching  
-- [ ] Session restore token persistence (skip consent on restart)  
-- [ ] GNOME Shell extension for system-tray agent-control toggle  
-- [ ] KDE Plasma Wayland support  
-- [ ] OCR integration via `computer_zoom` + Tesseract  
-- [ ] `computer_find` — semantic element search using vision  
