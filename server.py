@@ -14,8 +14,15 @@ Usage:
 """
 
 import asyncio
+import os
 import sys
 from typing import Optional
+
+# Suppress non-fatal GLib/GObject critical messages from GStreamer/PyGObject
+# (Python 3.14 + GLib 2.88 generates harmless "node != NULL" criticals during
+# PipeWire pipeline operation — they do not affect functionality)
+os.environ.setdefault("G_DEBUG", "")
+os.environ.setdefault("G_MESSAGES_DEBUG", "")
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -423,5 +430,10 @@ async def main():
         await app.run(read_stream, write_stream, app.create_initialization_options())
 
 
-if __name__ == "__main__":
+def main_sync():
+    """Synchronous entry point for pipx/wheel installs (portal-use script)."""
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    main_sync()

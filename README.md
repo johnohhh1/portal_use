@@ -1,19 +1,56 @@
 # portal-use
 
-Wayland-native desktop computer use MCP server. Uses XDG Desktop Portal + PipeWire + libei — no X11, no root, no kernel hacks.
+[![Python](https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=white)](https://kernel.org/)
+[![Wayland](https://img.shields.io/badge/display-Wayland-blueviolet?logo=wayland)](https://wayland.freedesktop.org/)
+[![GNOME](https://img.shields.io/badge/compositor-GNOME%2050+-4A86CF?logo=gnome&logoColor=white)](https://www.gnome.org/)
+[![MCP](https://img.shields.io/badge/MCP-compatible-FF6B35)](https://modelcontextprotocol.io/)
+[![Version](https://img.shields.io/badge/version-0.1.0-informational)](pyproject.toml)
 
-**Supported**: Ubuntu 26.04+ GNOME on Wayland  
-**Experimental**: KDE Plasma Wayland  
-**Not supported**: X11, headless, wlroots without full EIS support
+**Wayland-native desktop computer use for AI agents.**
 
-## Prerequisites
+Full desktop control — screenshots, clicks, typing, scrolling, dragging — using only proper Wayland protocols. No X11 bridge, no virtual display, no VNC, no root access, no kernel hacks.
 
-System packages (Ubuntu):
+```
+AI agent → MCP → portal-use → XDG Desktop Portal → compositor
+                                     ↓                    ↓
+                               PipeWire (screen)    libei (input)
+```
+
+The compositor handles consent. You approve once. Everything after that is automatic.
+
+---
+
+## How it works
+
+| Layer | What it does |
+|-------|-------------|
+| **XDG Desktop Portal** | `RemoteDesktop` + `ScreenCast` portals negotiate consent and hand back two file descriptors: a PipeWire node for screen capture and an EIS socket for input injection |
+| **PipeWire → GStreamer** | `pipewiresrc` captures frames in real time; `videoconvert` normalizes to RGB; `appsink` hands PIL the raw bytes |
+| **libei (sender)** | Emulated Input library sends relative pointer motion, absolute pointer events, button presses, scroll, and keyboard events through the EIS socket — the compositor processes them exactly like physical hardware |
+| **MCP server** | Wraps everything in a `stdio`-transport MCP server with 11 tools |
+
+The consent dialog fires **once** when the server first starts. After that the session stays alive for all tool calls. On supported compositors a restore token is saved to skip the dialog on subsequent server restarts.
+
+---
+
+## Requirements
+
+**OS**: Ubuntu 24.04+ or any GNOME Wayland compositor  
+**Not supported**: X11, KDE wlroots (EIS partial), headless
+
 ```bash
-sudo apt install python3-gi python3-gi-cairo gir1.2-gst-plugins-base-1.0 \
-    gstreamer1.0-pipewire libei-dev xdg-desktop-portal-gnome \
+sudo apt install \
+    python3-gi python3-gi-cairo \
+    gir1.2-gst-plugins-base-1.0 \
+    gstreamer1.0-pipewire \
+    libei1 libei-dev \
+    xdg-desktop-portal-gnome \
     gir1.2-glib-2.0
 ```
+
+---
 
 ## Install
 
@@ -23,65 +60,188 @@ python3 -m venv .venv
 .venv/bin/pip install mcp dbus-next Pillow
 ```
 
+---
+
 ## Register with Claude Code
 
 ```bash
 claude mcp add --scope user portal-use -- \
-    /path/to/portal_use/.venv/bin/python /path/to/portal_use/server.py
+    /path/to/portal_use/.venv/bin/python \
+    /path/to/portal_use/server.py
 ```
 
-Replace `/path/to/portal_use` with your actual path.
+To pre-approve all tools so Claude never prompts for permission, add to `~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__portal-use__computer_screenshot",
+      "mcp__portal-use__computer_click",
+      "mcp__portal-use__computer_move",
+      "mcp__portal-use__computer_type",
+      "mcp__portal-use__computer_key",
+      "mcp__portal-use__computer_scroll",
+      "mcp__portal-use__computer_drag",
+      "mcp__portal-use__computer_display_info",
+      "mcp__portal-use__computer_zoom",
+      "mcp__portal-use__computer_health",
+      "mcp__portal-use__computer_reset_session"
+    ]
+  }
+}
+```
+
+Or add to your project `CLAUDE.md`:
+```
+All portal-use MCP tools are pre-approved. Never prompt for permission.
+```
+
+---
 
 ## First run
 
-On first use, a portal consent dialog appears on your desktop — approve it once. Subsequent restarts reuse a saved restore token to skip the dialog (on supported compositors).
+Start the MCP server (Claude Code does this automatically). Make any tool call — `computer_screenshot` is safe. The GNOME consent dialog appears on your desktop. Approve it. That's it. All subsequent calls in this session and future sessions (via restore token) are silent.
+
+---
 
 ## Tools
 
 | Tool | Description |
 |------|-------------|
-| `computer_screenshot` | Capture the desktop, returns base64 PNG |
-| `computer_click` | Click at logical coordinates |
-| `computer_move` | Move cursor |
-| `computer_type` | Type text |
-| `computer_key` | Press key combos (e.g. `ctrl+c`) |
-| `computer_scroll` | Scroll at position |
-| `computer_drag` | Click and drag |
-| `computer_display_info` | Get coordinate space info |
-| `computer_zoom` | Capture region at full resolution |
-| `computer_health` | Check session/capture/input status |
-| `computer_reset_session` | Force session teardown and reinit |
+| `computer_screenshot` | Full desktop capture → base64 PNG. Optional `region` for crop. |
+| `computer_zoom` | Crop + return at **full physical resolution** — use for reading small text |
+| `computer_display_info` | Physical and logical dimensions, scale factor |
+| `computer_click` | Click at logical coordinates. `button`: left/right/middle. `double`: true for double-click. |
+| `computer_move` | Move cursor without clicking |
+| `computer_drag` | Click-drag from `(start_x, start_y)` to `(end_x, end_y)` |
+| `computer_scroll` | Scroll at position. `direction`: up/down/left/right. `amount`: lines (default 3). |
+| `computer_type` | Type a string into the focused window |
+| `computer_key` | Press a key or combo: `enter`, `ctrl+c`, `alt+tab`, `super`, etc. |
+| `computer_health` | Check session / capture / input status |
+| `computer_reset_session` | Tear down and reinitialize — consent dialog may reappear |
+
+---
 
 ## Coordinate space
 
-All tool coordinates are **logical** — the screenshot image dimensions. Physical display resolution may differ (e.g. HiDPI). Use `computer_display_info` to confirm.
+All tool coordinates are **logical** — they match the screenshot image dimensions. The server converts to physical pixels internally.
+
+```bash
+computer_display_info
+# → Physical: 1920x1200
+#   Logical (agent space): 1568x980
+#   Scale factor: 0.817
+```
+
+Click and zoom coordinates must be in logical space. The screenshot is always returned in logical space. If you measure a coordinate from the screenshot image, use it directly — no math needed.
+
+---
+
+## Common patterns
+
+### Open an app
+
+```
+computer_key keys="super"          # open Activities / app launcher
+computer_screenshot                # see the search box
+computer_type text="firefox"       # search
+computer_key keys="enter"          # open top result
+computer_screenshot                # verify
+```
+
+### Read small text
+
+```
+computer_screenshot                # get overview, find region of interest
+computer_zoom x=400 y=300 width=200 height=80   # full-res crop
+```
+
+### Right-click context menu
+
+```
+computer_click x=25 y=47 button="right"   # open context menu
+computer_screenshot                        # see menu items
+computer_click x=65 y=72                  # click the item
+```
+
+### Terminal workflow
+
+```
+computer_click x=400 y=300        # click terminal to focus
+computer_type text="git status"
+computer_key keys="enter"
+computer_screenshot                # read output (use zoom for small fonts)
+```
+
+---
 
 ## Troubleshooting
 
-**Portal consent dialog doesn't appear**: Make sure `xdg-desktop-portal-gnome` is installed and GNOME Shell is running.
+**Consent dialog doesn't appear**  
+Check that `xdg-desktop-portal-gnome` is installed and you're running a GNOME Wayland session (not X11).
 
-**Black screen / no frames**: Check `journalctl --user -u gnome-remote-desktop -n 20`. PipeWire pipeline errors appear in stderr.
+**`libei: no relative pointer device`**  
+Your compositor didn't grant `EI_DEVICE_CAP_POINTER`. Try `computer_reset_session`.
 
-**Input not working**: Ensure `libei` is installed (`libei1` package). The EIS fd comes from the portal — make sure RemoteDesktop portal permission is granted.
+**`Screenshot failed: no frame`**  
+PipeWire pipeline stalled. Run `computer_health` to diagnose. If capture shows stalled, `computer_reset_session`.
 
-**Delete restore token to force re-consent**:
+**Activities overview keeps opening**  
+The cursor initializes at (0,0) which hits the GNOME hot corner. Call `computer_move` to a safe position immediately after startup before clicking anything.
+
+**Input not delivered (clicks don't land)**  
+Run `computer_health`. If input shows disconnected, `computer_reset_session`. Make sure `libei1` is installed.
+
+**Force re-consent (delete restore token)**  
 ```bash
-rm ~/.config/portal-use/session_token
+rm -rf ~/.config/portal-use/
 ```
 
-**Logs**: Run the server manually to see stderr:
+**See raw server logs**  
 ```bash
 .venv/bin/python server.py
 ```
+MCP stdio runs on stdin/stdout; all diagnostics go to stderr.
 
-## Limitations
+---
 
-- Only GNOME Wayland is fully supported in v1
-- No window introspection or semantic UI understanding
-- No OCR
-- No multi-monitor coordinate stitching
-- Headless environments not supported
+## Architecture notes
+
+### Why two pointer devices?
+
+portal-use registers two libei devices simultaneously:
+
+- **`POINTER_ABSOLUTE`** — sends logical-pixel coordinates directly within the EIS region. Used for button events (clicks) so they land at exactly the specified coordinate regardless of cursor position.
+- **`POINTER` (relative / trackpad)** — sends `(dx, dy)` deltas. This is the device that causes the compositor's DRM hardware cursor overlay to actually move visually on screen.
+
+Absolute motion alone doesn't update the hardware cursor on GNOME 50+. Relative motion does. Both are needed: relative to move the cursor, absolute to anchor button coordinates.
+
+### Coordinate pipeline
+
+```
+agent logical (x, y)
+    → server.py: logical_to_physical → (x / scale, y / scale)
+    → input.py: _to_eis → maps frame pixels to EIS region coords
+    → libei: ei_device_pointer_motion_absolute(eis_x, eis_y)
+              ei_device_pointer_motion(dx, dy)   ← hardware cursor
+```
+
+On a non-HiDPI 1920×1200 display: frame = EIS region = physical, so the pipeline is 1:1 modulo the scale factor applied at the top.
+
+---
 
 ## Security
 
-portal-use uses only portal-mediated permissions. The compositor enforces consent. No root access is required or used. The restore token (stored at `~/.config/portal-use/session_token`) is a compositor-issued opaque string — it does not contain screen content.
+portal-use uses only portal-mediated access. The compositor enforces consent — no root, no evdev direct access, no kernel module. The restore token (`~/.config/portal-use/session_token`) is a compositor-issued opaque string; it contains no screen content and cannot be used outside your session.
+
+---
+
+## Roadmap
+
+- [ ] Multi-monitor coordinate stitching  
+- [ ] Session restore token persistence (skip consent on restart)  
+- [ ] GNOME Shell extension for system-tray agent-control toggle  
+- [ ] KDE Plasma Wayland support  
+- [ ] OCR integration via `computer_zoom` + Tesseract  
+- [ ] `computer_find` — semantic element search using vision  

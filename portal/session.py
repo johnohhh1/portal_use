@@ -144,18 +144,20 @@ class PortalSession:
         # KEYBOARD = 1, POINTER = 2
         options: dict = {"types": Variant("u", 3)}
         await self._call_portal(REMOTE_IFACE, "SelectDevices",
-                                self.session_path, options)
+                                self.session_path, options, timeout=120.0)
         print("[portal] Devices selected (keyboard + pointer)", file=sys.stderr, flush=True)
 
     async def _select_sources(self):
+        # NOTE: persist_mode causes xdg-desktop-portal-gnome 50.x to deadlock
+        # (SelectSources never sends a Response signal on combined RD+ScreenCast
+        # sessions). Omit it until the upstream bug is fixed. Restore tokens
+        # will not be issued without persist_mode, so consent fires every restart.
         options: dict = {
             "types": Variant("u", 1),
             "cursor_mode": Variant("u", 2),
-            "persist_mode": Variant("u", 2),  # 2 = persistent (until explicitly revoked)
         }
         if self._restore_token:
-            options["restore_token"] = Variant("s", self._restore_token)
-            print(f"[portal] Using restore token to skip consent", file=sys.stderr, flush=True)
+            print(f"[portal] Restore token on file but persist_mode disabled (GNOME 50 bug) — consent will appear", file=sys.stderr, flush=True)
         else:
             print(f"[portal] No restore token — consent dialog will appear", file=sys.stderr, flush=True)
         await self._call_portal(CAST_IFACE, "SelectSources", self.session_path, options)
@@ -230,6 +232,11 @@ class PortalSession:
                 pass
         if self.bus:
             self.bus.disconnect()
+        # Null out all fields so is_alive() returns False after close
+        self.bus = None
+        self.session_path = None
+        self.ei_fd = None
+        self.pw_fd = None
 
 
 def _dbus_sig(val) -> str:
