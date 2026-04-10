@@ -1,0 +1,19 @@
+[Unit]
+Description=portal-use Wayland desktop computer use MCP daemon
+Documentation=https://github.com/johnohhh1/portal_use
+After=graphical-session.target xdg-desktop-portal.service
+Requires=xdg-desktop-portal.service
+
+[Service]
+Type=simple
+# Placeholders replaced by install.sh:  VENV_PYTHON  REPO_DIR  PORT
+ExecStart=VENV_PYTHON REPO_DIR/server.py --http PORT
+WorkingDirectory=REPO_DIR
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+Environment=G_DEBUG=
+Environment=G_MESSAGES_DEBUG=
+
+[Install]
+WantedBy=graphical-session.target

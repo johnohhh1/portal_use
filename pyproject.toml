@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "portal-use"
-version = "0.1.0"
+version = "0.2.0"
 description = "Wayland-native desktop computer use MCP server via XDG Desktop Portal"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,12 +13,13 @@ dependencies = [
     "mcp>=1.0",
     "dbus-next>=0.2.3",
     "Pillow>=10.0",
+    # HTTP daemon mode deps (also pulled in by install.sh)
+    "uvicorn>=0.20",
+    "starlette>=0.40",
     # PyGObject (gi) must be installed via system package: python3-gi
     # gstreamer1.0-pipewire must be installed via system package
 ]
 
-# NOTE: portal-use = "server:main_sync" — main_sync wraps asyncio.run(main())
-# and will be added to server.py before this entry point is usable.
 [project.scripts]
 portal-use = "server:main_sync"
 

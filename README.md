@@ -6,7 +6,7 @@
 [![Wayland](https://img.shields.io/badge/display-Wayland-blueviolet?logo=wayland)](https://wayland.freedesktop.org/)
 [![GNOME](https://img.shields.io/badge/compositor-GNOME%2050+-4A86CF?logo=gnome&logoColor=white)](https://www.gnome.org/)
 [![MCP](https://img.shields.io/badge/MCP-compatible-FF6B35)](https://modelcontextprotocol.io/)
-[![Version](https://img.shields.io/badge/version-0.1.0-informational)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.2.0-informational)](pyproject.toml)
 
 **Wayland-native desktop computer use for AI agents.**
 
@@ -74,7 +74,46 @@ python3 -m venv --system-site-packages .venv
 
 ---
 
-## Register with Claude Code
+## Register with Claude
+
+`install.sh` handles registration automatically. For manual setup, choose a mode:
+
+### Daemon mode (recommended)
+
+The server runs as a persistent background service. Portal consent fires once when the
+daemon starts at login — not once per Claude session.
+
+```bash
+# Start the daemon
+python server.py --http 8765
+
+# Register with Claude Code
+claude mcp add --transport http --scope user portal-use http://127.0.0.1:8765/mcp
+```
+
+Claude Desktop — add to `~/.config/Claude/claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "portal-use": {
+      "url": "http://127.0.0.1:8765/mcp"
+    }
+  }
+}
+```
+
+Keep the daemon alive across logins with systemd:
+```bash
+# install.sh does this automatically, or manually:
+cp portal-use.service ~/.config/systemd/user/
+# Edit VENV_PYTHON, REPO_DIR, PORT placeholders, then:
+systemctl --user enable --now portal-use
+journalctl --user -u portal-use -f   # watch logs
+```
+
+### Stdio mode (simple, no daemon)
+
+Claude Code spawns the server per session. Consent fires on each new Claude session.
 
 ```bash
 claude mcp add --scope user portal-use -- \
@@ -82,10 +121,7 @@ claude mcp add --scope user portal-use -- \
     /path/to/portal_use/server.py
 ```
 
-## Register with Claude Desktop
-
-Add to `~/.config/Claude/claude_desktop_config.json`:
-
+Claude Desktop:
 ```json
 {
   "mcpServers": {

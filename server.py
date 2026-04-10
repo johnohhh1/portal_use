@@ -5,22 +5,25 @@ portal-use: Wayland-native computer use MCP server.
 Uses XDG Desktop Portal (RemoteDesktop + ScreenCast) + PipeWire + libei.
 No X11. No root. No kernel hacks.
 
-The portal consent dialog fires ONCE when this server starts, then the session
-is kept alive for all subsequent tool calls — no prompts per tool use.
+Two transport modes:
 
-Usage:
-  claude mcp add --scope user portal-use -- \
-    /home/johnohhh1/portal_use/.venv/bin/python /home/johnohhh1/portal_use/server.py
+  Stdio (default) — Claude Code spawns the server per session:
+    claude mcp add --scope user portal-use -- \\
+        /path/to/.venv/bin/python /path/to/server.py
+
+  HTTP daemon — persistent server, consent fires once at service start:
+    python server.py --http [PORT]          # default port 8765
+    claude mcp add --transport http portal-use http://localhost:8765/mcp
+    # or Claude Desktop: "url": "http://localhost:8765/mcp"
 """
 
 import asyncio
+import contextlib
 import os
 import sys
 from typing import Optional
 
 # Suppress non-fatal GLib/GObject critical messages from GStreamer/PyGObject
-# (Python 3.14 + GLib 2.88 generates harmless "node != NULL" criticals during
-# PipeWire pipeline operation — they do not affect functionality)
 os.environ.setdefault("G_DEBUG", "")
 os.environ.setdefault("G_MESSAGES_DEBUG", "")
 
@@ -35,7 +38,7 @@ from portal.input import EIInput, BTN_LEFT, BTN_RIGHT, BTN_MIDDLE
 
 app = Server("portal-use")
 
-# ── Session state (module-level, shared across all tool calls) ─────────────────
+# ── Session state ──────────────────────────────────────────────────────────────
 _session: Optional[PortalSession] = None
 _capture: Optional[ScreenCapture] = None
 _input:   Optional[EIInput]       = None
@@ -48,13 +51,13 @@ _session_lock = asyncio.Lock()
 async def _init_session():
     """
     Establish the portal session and start capture + input.
-    Called once at server startup — this is where the consent dialog appears.
-    Auto-called again if the session is lost.
+    In stdio mode: called lazily on first tool use (consent dialog appears then).
+    In HTTP mode: called once at server startup via lifespan (consent fires at launch).
     """
     global _session, _capture, _input, _scale_factor, _phys_width, _phys_height
 
     print("[portal-use] Starting portal session...", file=sys.stderr, flush=True)
-    print("[portal-use] A consent dialog may appear on your desktop — approve it once.",
+    print("[portal-use] A consent dialog may appear — approve it once.",
           file=sys.stderr, flush=True)
 
     _session = PortalSession()
@@ -69,27 +72,22 @@ async def _init_session():
     else:
         _phys_width, _phys_height = 1920, 1080
 
-    # Start PipeWire capture
     if _capture:
         _capture.stop()
     _capture = ScreenCapture(pw_fd=_session.pw_fd, node_id=node_id)
     _capture.start()
 
-    # Grab one frame to get actual dimensions
     frame = await asyncio.get_running_loop().run_in_executor(
         None, lambda: _capture.grab_frame(timeout=10.0)
     )
     if frame:
         _phys_width, _phys_height = frame.size
 
-    # Calculate scale factor (max 1568px long edge for API)
     long_edge = max(_phys_width, _phys_height)
     _scale_factor = min(1.0, 1568 / long_edge)
 
-    # Start libei input — connect() must run in the main thread (not executor)
-    # because ei_seat_bind_capabilities is a varargs C function and ctypes
-    # varargs dispatch from a thread pool segfaults on x86-64 due to stack
-    # alignment. Short blocking call (<1s) is acceptable at startup.
+    # ei_seat_bind_capabilities is varargs — must run in main thread to avoid
+    # stack-alignment segfault on x86-64 when called from a thread pool.
     if _input:
         _input.close()
     _input = EIInput(
@@ -99,9 +97,8 @@ async def _init_session():
     )
     _input.connect()
 
-    # Move cursor away from (0,0) immediately — the homing move during connect()
-    # parks the cursor at the top-left corner which hits GNOME's Activities hot
-    # corner and opens the overview on the first tool call. Nudge to a safe spot.
+    # Nudge cursor away from (0,0) — the homing delta during connect() parks it
+    # at the top-left corner which triggers GNOME's Activities hot corner.
     safe_x = _phys_width * 0.05
     safe_y = _phys_height * 0.5
     await asyncio.get_running_loop().run_in_executor(
@@ -115,11 +112,21 @@ async def _init_session():
     )
 
 
+async def _teardown_session():
+    global _session, _capture, _input
+    if _capture:
+        _capture.stop()
+        _capture = None
+    if _input:
+        _input.close()
+        _input = None
+    if _session:
+        await _session.close()
+        _session = None
+
+
 async def ensure_session():
-    """
-    Ensure the portal session is active. Reconnects automatically if dropped.
-    Each tool call goes through here — normally a no-op after first init.
-    """
+    """Ensure the portal session is active. Reconnects automatically if dropped."""
     global _session
     async with _session_lock:
         needs_init = (
@@ -130,7 +137,7 @@ async def ensure_session():
         )
         if needs_init:
             if _session is not None and not _session.is_alive():
-                print("[portal-use] Session appears dead, reinitializing...", file=sys.stderr, flush=True)
+                print("[portal-use] Session dropped, reinitializing...", file=sys.stderr, flush=True)
             await _init_session()
 
 
@@ -253,11 +260,10 @@ async def list_tools() -> list[types.Tool]:
     ]
 
 
-# ── Tool handlers ─────────────────────────────────────────────────────────────
+# ── Tool handlers ──────────────────────────────────────────────────────────────
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
-    # Health and reset don't need a live session to be called
     if name == "computer_health":
         return await _tool_health()
     if name == "computer_reset_session":
@@ -291,13 +297,11 @@ async def _tool_screenshot(args: dict) -> list[types.ContentBlock]:
     frame = await _grab_frame()
     if frame is None:
         return [types.TextContent(type="text", text="Screenshot failed: no frame")]
-
     region = args.get("region")
     if region:
         px, py = logical_to_physical(region["x"], region["y"])
         pw, ph = region["width"] / _scale_factor, region["height"] / _scale_factor
         frame = frame.crop((int(px), int(py), int(px + pw), int(py + ph)))
-
     scaled, _ = scale_image_for_api(frame)
     return [types.ImageContent(type="image", data=image_to_png_b64(scaled), mimeType="image/png")]
 
@@ -345,7 +349,6 @@ async def _tool_drag(args: dict) -> list[types.ContentBlock]:
     btn = {"left": BTN_LEFT, "right": BTN_RIGHT, "middle": BTN_MIDDLE}.get(
         args.get("button", "left"), BTN_LEFT
     )
-
     def do_drag():
         _input.move(sx, sy)
         _input.button(btn, True)
@@ -355,7 +358,6 @@ async def _tool_drag(args: dict) -> list[types.ContentBlock]:
             _input.move(sx + (ex - sx) * i / steps, sy + (ey - sy) * i / steps)
             time.sleep(0.02)
         _input.button(btn, False)
-
     await asyncio.get_running_loop().run_in_executor(None, do_drag)
     return [types.TextContent(type="text", text=f"Dragged ({args['start_x']},{args['start_y']}) → ({args['end_x']},{args['end_y']})")]
 
@@ -393,7 +395,6 @@ async def _tool_health() -> list[types.ContentBlock]:
     if _capture is None:
         parts.append("capture: not initialized")
     else:
-        # Try a quick frame grab to verify capture is live
         frame = await asyncio.get_running_loop().run_in_executor(
             None, lambda: _capture.grab_frame(timeout=2.0)
         )
@@ -413,18 +414,9 @@ async def _tool_health() -> list[types.ContentBlock]:
 
 
 async def _tool_reset_session() -> list[types.ContentBlock]:
-    global _session, _capture, _input
     async with _session_lock:
         print("[portal-use] Resetting session...", file=sys.stderr, flush=True)
-        if _capture:
-            _capture.stop()
-            _capture = None
-        if _input:
-            _input.close()
-            _input = None
-        if _session:
-            await _session.close()
-            _session = None
+        await _teardown_session()
         try:
             await _init_session()
             return [types.TextContent(type="text", text="Session reset successful.")]
@@ -432,16 +424,68 @@ async def _tool_reset_session() -> list[types.ContentBlock]:
             return [types.TextContent(type="text", text=f"Session reset failed: {e}")]
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
+# ── Entry points ───────────────────────────────────────────────────────────────
 
-async def main():
+async def main_stdio():
+    """stdio transport — Claude Code spawns this as a child process."""
     async with stdio_server() as (read_stream, write_stream):
         await app.run(read_stream, write_stream, app.create_initialization_options())
 
 
+async def main_http(port: int):
+    """
+    HTTP daemon — persistent server on localhost:PORT.
+    Portal session opens at startup (consent fires once), stays alive indefinitely.
+    Claude Code: claude mcp add --transport http portal-use http://localhost:PORT/mcp
+    Claude Desktop: "url": "http://localhost:PORT/mcp"
+    """
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+
+    session_manager = StreamableHTTPSessionManager(app)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        # Init portal session once at server start — consent fires here, not per tool call.
+        await _init_session()
+        async with session_manager.run():
+            print(f"[portal-use] HTTP daemon listening on http://127.0.0.1:{port}/mcp",
+                  file=sys.stderr, flush=True)
+            try:
+                yield
+            finally:
+                await _teardown_session()
+
+    starlette_app = Starlette(
+        lifespan=lifespan,
+        routes=[Mount("/mcp", app=session_manager.handle_request)],
+    )
+
+    config = uvicorn.Config(
+        starlette_app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
 def main_sync():
-    """Synchronous entry point for pipx/wheel installs (portal-use script)."""
-    asyncio.run(main())
+    """Synchronous entry point — dispatches to stdio or HTTP based on argv."""
+    if "--http" in sys.argv:
+        idx = sys.argv.index("--http")
+        port = 8765
+        if idx + 1 < len(sys.argv):
+            try:
+                port = int(sys.argv[idx + 1])
+            except ValueError:
+                pass
+        asyncio.run(main_http(port))
+    else:
+        asyncio.run(main_stdio())
 
 
 if __name__ == "__main__":
